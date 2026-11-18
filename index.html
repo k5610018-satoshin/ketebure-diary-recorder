@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src blob:; base-uri 'none'; form-action 'none'">
+<title>日記の録音</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f4f4ee;color:#193a37;font:1.05rem/1.65 system-ui,sans-serif}main{max-width:34rem;margin:6vh auto;padding:clamp(1.4rem,5vw,2.8rem);border-radius:1.2rem;background:white}h1{font-size:1.65rem;margin:0}button,a{display:inline-block;padding:.65rem .95rem;border-radius:.65rem;border:1px solid #49736e;background:white;color:#1c4943;font:inherit;cursor:pointer}button.primary{background:#185e54;color:white}button:disabled{opacity:.55}audio{max-width:100%}#buttons{display:flex;gap:.6rem;flex-wrap:wrap}#state{min-height:1.6em}[hidden]{display:none!important}
+</style></head><body><main><h1>日記の録音</h1>
+<p>自分の声で、今日のできごとを話そう。1回に90秒まで録れます。</p>
+<p id="state" role="status" aria-live="polite">マイクの準備ができたら、録音を始めよう。</p>
+<audio id="listen" controls hidden aria-label="録った声を聞く"></audio>
+<div id="buttons"><button id="start" class="primary">録音を始める</button><button id="stop" hidden>録音を止める</button>
+<button id="send" class="primary" hidden>この声を日記に戻す</button><a id="download" hidden>録音を保存</a><button id="close">閉じる</button></div>
+<script>
+'use strict';
+const el=id=>document.getElementById(id),params=new URLSearchParams(location.hash.slice(1));
+const parentOrigin=params.get('from'),nonce=params.get('key');
+const schoolOrigin='https://n-v2y3aaobm2oidur7civtygrxiohfwwg7kcoe4na-0lu-script.googleusercontent.com';
+const connected=!!window.opener&&!!nonce&&/^[0-9a-f-]{36}$/.test(nonce)&&parentOrigin===schoolOrigin;
+history.replaceState(null,'',location.pathname);
+let stream,recorder,clip,url,deadline,elapsed,pending=false,sentTimer,sequence=0;
+function say(text){el('state').textContent=text;}
+function release(){clearTimeout(deadline);clearInterval(elapsed);stream?.getTracks().forEach(t=>t.stop());stream=null;}
+function stop(){if(recorder?.state==='recording')recorder.stop();}
+function showClip(){
+ el('stop').hidden=true;el('start').hidden=false;el('start').disabled=false;
+ el('listen').hidden=!clip;el('download').hidden=!clip;el('send').hidden=!clip||!connected;
+ if(clip){if(url)URL.revokeObjectURL(url);url=URL.createObjectURL(clip);
+  el('listen').src=url;el('download').href=url;el('download').download='日記の録音.'+(clip.type.includes('mp4')?'m4a':'webm');
+  el('start').textContent='録り直す';say(connected?'聞き直したら、日記に戻そう。':'「録音を保存」を押し、日記の「音声ファイルを選ぶ」から開いてね。');}
+}
+el('start').onclick=async()=>{
+ if(pending||recorder?.state==='recording')return;
+ pending=true;el('start').disabled=true;const own=++sequence;
+ try{
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw Error('unsupported');
+  const type=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+  if(!type)throw Error('unsupported');
+  const acquired=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+  if(own!==sequence){acquired.getTracks().forEach(t=>t.stop());return;}
+  stream=acquired;recorder=new MediaRecorder(stream,{mimeType:type,audioBitsPerSecond:48000});
+  const parts=[];let failed=false,size=0;
+  recorder.ondataavailable=e=>{if(!e.data.size)return;size+=e.data.size;if(size>4*1024*1024){failed=true;stop();return;}parts.push(e.data);};
+  recorder.onerror=()=>{failed=true;stop();release();showClip();say('録音できませんでした。もう一度試してください。');};
+  recorder.onstop=()=>{release();if(own!==sequence)return;if(!failed&&size)clip=new Blob(parts,{type});showClip();if(failed||!size)say('音声を録れませんでした。短く区切ってもう一度試してね。');};
+  recorder.start(500);el('listen').pause();el('listen').hidden=true;el('download').hidden=true;el('send').hidden=true;el('start').hidden=true;el('stop').hidden=false;
+  const start=Date.now();say('録音中です。話し終わったら止めよう。');elapsed=setInterval(()=>{say('録音中　'+Math.floor((Date.now()-start)/1000)+'秒');},1000);
+  deadline=setTimeout(stop,90000);
+ }catch(e){release();showClip();say(e.name==='NotAllowedError'?'このページのマイクを許可してね。学校の端末で許可できない時は、端末で録った音声を日記から選べます。':'マイクを使えませんでした。端末で録った音声を日記から選べます。');}
+ finally{pending=false;el('start').disabled=false;}
+};
+el('stop').onclick=stop;
+el('send').onclick=()=>{
+ if(!connected||!clip||window.opener.closed)return say('日記の画面を開き直すか、録音を保存して日記から選んでね。');
+ el('send').disabled=true;window.opener.postMessage({kind:'diary-voice',key:nonce,clip},parentOrigin);
+ sentTimer=setTimeout(()=>{el('send').disabled=false;say('日記に戻せませんでした。録音を保存して、日記から選んでね。');},4500);
+};
+window.addEventListener('message',e=>{
+ if(!connected||e.source!==window.opener||e.origin!==parentOrigin||e.data?.kind!=='diary-voice-received'||e.data.key!==nonce)return;
+ clearTimeout(sentTimer);say('日記に戻しました。日記の画面で「文字にする」を押してね。');window.close();
+});
+el('close').onclick=()=>{++sequence;stop();release();window.close();};
+window.addEventListener('pagehide',()=>{++sequence;stop();release();if(url)URL.revokeObjectURL(url);});
+</script></main></body></html>
